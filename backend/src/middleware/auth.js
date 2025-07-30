@@ -1,19 +1,38 @@
 const jwt = require('jsonwebtoken');
+const { pool } = require('../models/database');
 
-const authMiddleware = (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Access token required'
+    });
+  }
+
   try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    if (!token) {
-      return res.status(401).json({ error: 'Access denied. No token provided.' });
+    const userQuery = 'SELECT id, username, email FROM users WHERE id = $1';
+    const userResult = await pool.query(userQuery, [decoded.userId]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-    req.user = decoded;
+    req.user = userResult.rows[0];
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
+    return res.status(403).json({
+      success: false,
+      message: 'Invalid or expired token'
+    });
   }
 };
 
-module.exports = authMiddleware;
+module.exports = { authenticateToken };

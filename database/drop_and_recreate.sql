@@ -1,15 +1,23 @@
--- Don't try to create database - use existing one
--- CREATE DATABASE pdf_transactions;
+-- Connect to PostgreSQL as superuser first
+-- psql -U postgres
 
--- We're already connected to pdf_transactions database
--- \c pdf_transactions;
+-- Terminate all connections to the database (if it exists)
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE datname = 'pdf_transactions' AND pid <> pg_backend_pid();
 
--- Drop existing tables if they exist (in correct order due to foreign keys)
+-- Drop the database if it exists
+DROP DATABASE IF EXISTS pdf_transactions;
+
+-- Create fresh database
+CREATE DATABASE pdf_transactions;
+
+-- Connect to the new database
+\c pdf_transactions;
+
+-- Drop tables if they exist (in correct order due to foreign keys)
 DROP TABLE IF EXISTS transactions CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
-
--- Drop existing functions if they exist
-DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE;
 
 -- Create users table
 CREATE TABLE users (
@@ -65,10 +73,21 @@ CREATE TRIGGER update_transactions_updated_at
     FOR EACH ROW 
     EXECUTE FUNCTION update_updated_at_column();
 
--- Insert a test user (password is 'password' hashed with bcrypt)
+-- Insert a test user (optional)
 INSERT INTO users (username, email, password) 
-VALUES ('testuser', 'test@example.com', '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi')
-ON CONFLICT (email) DO NOTHING;
+VALUES ('testuser', 'test@example.com', '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi');
+-- Password is 'password' hashed with bcrypt
 
 -- Verify tables were created
-SELECT 'Tables created successfully!' as status;
+\dt
+
+-- Show table structures
+\d users
+\d transactions
+
+-- Grant permissions (adjust as needed)
+-- GRANT ALL PRIVILEGES ON DATABASE pdf_transactions TO your_app_user;
+-- GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO your_app_user;
+-- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO your_app_user;
+
+SELECT 'Database recreated successfully!' as status;

@@ -1,125 +1,127 @@
-const pool = require('../models/database');
+const { pool } = require('../models/database');
 
 class TransactionService {
-  async saveTransactions(transactions, pdfFilename) {
-    const client = await pool.connect();
-    
+  async saveTransaction(transactionData) {
+    const {
+      userId,
+      fileName,
+      filePath,
+      originalText,
+      translatedText,
+      extractedData
+    } = transactionData;
+
     try {
-      await client.query('BEGIN');
-      
-      const savedTransactions = [];
-      
-      for (const transaction of transactions) {
-        const query = `
-          INSERT INTO transactions (
-            serial_no, buyer, seller, house_no, survey_no, document_no, 
-            transaction_date, value, market_value, property_extent, 
-            property_type, village, nature, pdf_filename, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
-          RETURNING *
-        `;
-        
-        const values = [
-          transaction.serialNo || null,
-          transaction.buyer || null,
-          transaction.seller || null,
-          transaction.houseNo || null,
-          transaction.surveyNo || null,
-          transaction.documentNo || null,
-          this.parseDate(transaction.date),
-          transaction.value ? parseInt(transaction.value) : null,
-          transaction.marketValue ? parseInt(transaction.marketValue) : null,
-          transaction.propertyExtent || null,
-          transaction.propertyType || null,
-          transaction.village || null,
-          transaction.nature || null,
-          pdfFilename
-        ];
-        
-        const result = await client.query(query, values);
-        savedTransactions.push(result.rows[0]);
-      }
-      
-      await client.query('COMMIT');
-      console.log(`Saved ${savedTransactions.length} transactions to database`);
-      return savedTransactions;
-      
+      const query = `
+        INSERT INTO transactions 
+        (user_id, file_name, file_path, original_text, translated_text, transaction_data)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `;
+
+      const values = [
+        userId,
+        fileName,
+        filePath,
+        originalText,
+        translatedText,
+        JSON.stringify(extractedData)
+      ];
+
+      const result = await pool.query(query, values);
+      return result.rows[0];
     } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error saving transactions:', error);
-      throw error;
-    } finally {
-      client.release();
+      console.error('Database save error:', error);
+      throw new Error('Failed to save transaction: ' + error.message);
     }
   }
 
-  parseDate(dateString) {
-    if (!dateString) return null;
-    
+  async getTransactions(userId, filters = {}) {
     try {
-      // Handle DD-MMM-YYYY format (e.g., "06-Feb-2013")
-      const months = {
-        'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
-        'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
-        'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
-      };
+      let query = `
+        SELECT 
+          id,
+          file_name,
+          translated_text,
+          transaction_data,
+          processed_at,
+          created_at
+        FROM transactions 
+        WHERE user_id = $1
+      `;
       
-      const match = dateString.match(/(\d{2})-([A-Za-z]{3})-(\d{4})/);
-      if (match) {
-        const [, day, monthName, year] = match;
-        const month = months[monthName];
-        if (month) {
-          return new Date(`${year}-${month}-${day}`);
-        }
+      const values = [userId];
+      let paramCount = 1;
+
+      if (filters.startDate) {
+        paramCount++;
+        query += ` AND created_at >= $${paramCount}`;
+        values.push(filters.startDate);
       }
-      
-      // Fallback to regular date parsing
-      return new Date(dateString);
+
+      if (filters.endDate) {
+        paramCount++;
+        query += ` AND created_at <= $${paramCount}`;
+        values.push(filters.endDate);
+      }
+
+      if (filters.search) {
+        paramCount++;
+        query += ` AND (file_name ILIKE $${paramCount} OR translated_text ILIKE $${paramCount})`;
+        values.push(`%${filters.search}%`);
+      }
+
+      query += ` ORDER BY created_at DESC`;
+
+      if (filters.limit) {
+        paramCount++;
+        query += ` LIMIT $${paramCount}`;
+        values.push(filters.limit);
+      }
+
+      if (filters.offset) {
+        paramCount++;
+        query += ` OFFSET $${paramCount}`;
+        values.push(filters.offset);
+      }
+
+      const result = await pool.query(query, values);
+      return result.rows;
     } catch (error) {
-      console.error('Error parsing date:', dateString, error);
-      return null;
+      console.error('Database fetch error:', error);
+      throw new Error('Failed to fetch transactions: ' + error.message);
     }
   }
 
-  async getTransactions(filters = {}) {
-    let query = 'SELECT * FROM transactions WHERE 1=1';
-    const values = [];
-    let paramCount = 1;
-
-    if (filters.buyerName) {
-      query += ` AND buyer ILIKE $${paramCount}`;
-      values.push(`%${filters.buyerName}%`);
-      paramCount++;
+  async getTransactionById(transactionId, userId) {
+    try {
+      const query = `
+        SELECT * FROM transactions 
+        WHERE id = $1 AND user_id = $2
+      `;
+      
+      const result = await pool.query(query, [transactionId, userId]);
+      return result.rows[0];
+    } catch (error) {
+      console.error('Database fetch error:', error);
+      throw new Error('Failed to fetch transaction: ' + error.message);
     }
+  }
 
-    if (filters.sellerName) {
-      query += ` AND seller ILIKE $${paramCount}`;
-      values.push(`%${filters.sellerName}%`);
-      paramCount++;
+  async deleteTransaction(transactionId, userId) {
+    try {
+      const query = `
+        DELETE FROM transactions 
+        WHERE id = $1 AND user_id = $2
+        RETURNING id
+      `;
+      
+      const result = await pool.query(query, [transactionId, userId]);
+      return result.rows.length > 0;
+    } catch (error) {
+      console.error('Database delete error:', error);
+      throw new Error('Failed to delete transaction: ' + error.message);
     }
-
-    if (filters.houseNumber) {
-      query += ` AND house_no ILIKE $${paramCount}`;
-      values.push(`%${filters.houseNumber}%`);
-      paramCount++;
-    }
-
-    if (filters.surveyNumber) {
-      query += ` AND survey_no ILIKE $${paramCount}`;
-      values.push(`%${filters.surveyNumber}%`);
-      paramCount++;
-    }
-
-    if (filters.documentNumber) {
-      query += ` AND document_no ILIKE $${paramCount}`;
-      values.push(`%${filters.documentNumber}%`);
-      paramCount++;
-    }
-
-    query += ' ORDER BY created_at DESC';
-
-    const result = await pool.query(query, values);
-    return result.rows;
   }
 }
 

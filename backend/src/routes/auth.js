@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const pool = require('../models/database');
+const { pool } = require('../models/database');
 
 const router = express.Router();
 
@@ -10,86 +10,112 @@ router.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
-    // Check if user exists
-    const userExists = await pool.query(
-      'SELECT * FROM users WHERE email = $1 OR username = $2',
+    if (!username || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'All fields are required'
+      });
+    }
+
+    const existingUser = await pool.query(
+      'SELECT id FROM users WHERE email = $1 OR username = $2',
       [email, username]
     );
 
-    if (userExists.rows.length > 0) {
-      return res.status(400).json({ error: 'User already exists' });
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'User already exists'
+      });
     }
 
-    // Hash password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
-    const result = await pool.query(
+    const newUser = await pool.query(
       'INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id, username, email',
       [username, email, hashedPassword]
     );
 
-    const user = result.rows[0];
-
-    // Generate JWT
     const token = jwt.sign(
-      { userId: user.id, username: user.username },
-      process.env.JWT_SECRET || 'your-secret-key',
+      { userId: newUser.rows[0].id },
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
     res.status(201).json({
+      success: true,
       message: 'User created successfully',
-      user: { id: user.id, username: user.username, email: user.email },
-      token
+      data: {
+        user: newUser.rows[0],
+        token
+      }
     });
-
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ error: 'Failed to create user' });
+    res.status(500).json({
+      success: false,
+      message: 'Registration failed'
+    });
   }
 });
 
 // Login
 router.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { email, password } = req.body;
 
-    // Find user
-    const result = await pool.query(
-      'SELECT * FROM users WHERE username = $1 OR email = $1',
-      [username]
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+
+    const user = await pool.query(
+      'SELECT id, username, email, password FROM users WHERE email = $1',
+      [email]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    if (user.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
     }
 
-    const user = result.rows[0];
+    const validPassword = await bcrypt.compare(password, user.rows[0].password);
 
-    // Check password
-    const isValidPassword = await bcrypt.compare(password, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    if (!validPassword) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
     }
 
-    // Generate JWT
     const token = jwt.sign(
-      { userId: user.id, username: user.username },
-      process.env.JWT_SECRET || 'your-secret-key',
+      { userId: user.rows[0].id },
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
     res.json({
+      success: true,
       message: 'Login successful',
-      user: { id: user.id, username: user.username, email: user.email },
-      token
+      data: {
+        user: {
+          id: user.rows[0].id,
+          username: user.rows[0].username,
+          email: user.rows[0].email
+        },
+        token
+      }
     });
-
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed' });
+    res.status(500).json({
+      success: false,
+      message: 'Login failed'
+    });
   }
 });
 

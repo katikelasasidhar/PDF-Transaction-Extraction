@@ -1,8 +1,13 @@
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const pdfService = require('../services/pdfService');
-const transactionService = require('../services/transactionService');
+import multer from 'multer';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import fs from 'fs';
+import pdfService from '../services/pdfService.js';
+import transactionService from '../services/transactionService.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -19,105 +24,77 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype === 'application/pdf') {
+    cb(null, true);
+  } else {
+    cb(new Error('Only PDF files are allowed!'), false);
+  }
+};
+
+export const upload = multer({
   storage: storage,
+  fileFilter: fileFilter,
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
-      cb(null, true);
-    } else {
-      cb(new Error('Only PDF files are allowed'), false);
-    }
+    fileSize: 10 * 1024 * 1024 // 10MB limit
   }
 });
 
-class UploadController {
-  async uploadPDF(req, res) {
-    try {
-        
-      if (!req.file) {
-        return res.status(400).json({ error: 'No PDF file uploaded' });
-      }
-
-      const filePath = req.file.path;
-      const { buyerName, sellerName, houseNumber, surveyNumber, documentNumber } = req.body;
-
-      // Extract transactions from PDF
-      console.log('Extracting transactions from PDF...');
-      const transactions = await pdfService.extractTransactions(filePath);
-
-      // Filter transactions based on query parameters
-      const filteredTransactions = this.filterTransactions(transactions, {
-        buyerName,
-        sellerName,
-        houseNumber,
-        surveyNumber,
-        documentNumber
-      });
-
-      // Save transactions to database
-      console.log('Saving transactions to database...');
-      const savedTransactions = await transactionService.saveTransactions(
-        filteredTransactions,
-        req.file.filename
-      );
-
-      // Clean up uploaded file (optional)
-      // fs.unlinkSync(filePath);
-
-      res.json({
-        success: true,
-        message: `Successfully processed ${savedTransactions.length} transactions`,
-        transactions: savedTransactions,
-        pdfPath: `/uploads/${req.file.filename}`
-      });
-
-    } catch (error) {
-      console.error('Upload error:', error);
-      res.status(500).json({
-        error: 'Failed to process PDF',
-        message: error.message
+export const uploadPDF = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file uploaded'
       });
     }
-  }
 
-  filterTransactions(transactions, filters) {
-    return transactions.filter(transaction => {
-      if (filters.buyerName && transaction.buyer && 
-          !transaction.buyer.toLowerCase().includes(filters.buyerName.toLowerCase())) {
-        return false;
+    const filePath = req.file.path;
+    const fileName = req.file.originalname;
+    const userId = req.user.id;
+
+    // Process the PDF
+    const processedResult = await pdfService.processPDF(filePath);
+
+    // Save to database
+    const savedTransaction = await transactionService.saveTransaction({
+      userId,
+      fileName,
+      filePath,
+      originalText: processedResult.originalText,
+      translatedText: processedResult.translatedText,
+      extractedData: {
+        segments: processedResult.segments,
+        tamilSegmentsCount: processedResult.tamilSegmentsCount,
+        metadata: processedResult.metadata
       }
-      
-      if (filters.sellerName && transaction.seller && 
-          !transaction.seller.toLowerCase().includes(filters.sellerName.toLowerCase())) {
-        return false;
+    });
+
+    res.json({
+      success: true,
+      message: 'PDF processed successfully',
+      data: {
+        transactionId: savedTransaction.id,
+        fileName: fileName,
+        originalText: processedResult.originalText,
+        translatedText: processedResult.translatedText,
+        tamilSegmentsFound: processedResult.tamilSegmentsCount,
+        processedAt: savedTransaction.processed_at
       }
-      
-      if (filters.houseNumber && transaction.houseNo && 
-          transaction.houseNo !== filters.houseNumber) {
-        return false;
-      }
-      
-      if (filters.surveyNumber && transaction.surveyNo && 
-          transaction.surveyNo !== filters.surveyNumber) {
-        return false;
-      }
-      
-      if (filters.documentNumber && transaction.documentNo && 
-          transaction.documentNo !== filters.documentNumber) {
-        return false;
-      }
-      
-      return true;
+    });
+
+  } catch (error) {
+    console.error('Upload processing error:', error);
+    
+    // Clean up uploaded file if processing failed
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process PDF',
+      error: error.message
     });
   }
-}
-
-const uploadController = new UploadController();
-
-module.exports = {
-  upload: upload.single('pdf'),
-  uploadPDF: uploadController.uploadPDF.bind(uploadController)
 };
